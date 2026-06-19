@@ -18,8 +18,14 @@
   const touch = document.getElementById("touch");
   const elScore = document.getElementById("score");
   const elStage = document.getElementById("stage");
+  const elStageLabel = document.getElementById("stage-label");
   const elLives = document.getElementById("lives");
   const elHealth = document.getElementById("health-fill");
+
+  // ---- Highscore (sparas lokalt i webbläsaren) ----
+  function loadBest() { try { return parseInt(localStorage.getItem("er_best") || "0", 10) || 0; } catch (e) { return 0; } }
+  function saveBest(v) { try { localStorage.setItem("er_best", String(v)); } catch (e) {} }
+  let bestScore = loadBest();
 
   // ---- Färgpalett ----
   const C = {
@@ -33,6 +39,8 @@
     heroShirt: "#2e6ca8", heroShirtDk: "#1f4d7a", heroHat: "#d8b46a", heroPants: "#43342a",
     banShirt: "#b23a3a", banShirtDk: "#7d2626", banHat: "#222028", banBand: "#e8d24a",
     boss: "#6a3aa8", bossDk: "#472670",
+    horse: "#6a4326", horseDk: "#4a2e18", horseMane: "#2c1a0f", hoof: "#1c1209",
+    barrel: "#7a4a24", barrelHoop: "#3a2412",
     white: "#f1e4c9", black: "#160b22", blood: "#c1272d", gold: "#ffd23f"
   };
 
@@ -128,15 +136,27 @@
   // =========================================================================
   const GROUND = 300;          // y-nivå där fötter står (tågdäcket)
   const GRAV = 0.7;
-  const TOTAL_CARS = 6;        // antal tågvagnar (stages)
+
+  // Bansekvens: växla mellan tågstrid och hästjakt. Sista banan = boss.
+  const STAGES = [
+    { type: "train" },              // 1
+    { type: "horse" },              // 2 – jakt
+    { type: "train" },              // 3
+    { type: "horse" },              // 4 – jakt
+    { type: "train" },              // 5
+    { type: "train", boss: true }   // 6 – boss
+  ];
+  const TOTAL_CARS = STAGES.length;
 
   const game = {
     state: "TITLE",            // TITLE | PLAY | CLEAR | OVER | WIN
+    mode: "train",             // train | horse
     score: 0, lives: 3, stage: 1,
     timer: 0, flash: 0, shake: 0,
-    enemies: [], particles: [], floats: [],
+    enemies: [], particles: [], floats: [], obstacles: [],
     toDefeat: 0, defeated: 0,
-    scroll: 0, wheelPhase: 0
+    scroll: 0, wheelPhase: 0,
+    horse: null                // { dist, goal, spawnCd } i jaktläge
   };
 
   const hero = {
@@ -152,15 +172,43 @@
   }
 
   function spawnStage() {
+    const def = STAGES[game.stage - 1] || STAGES[STAGES.length - 1];
+    game.mode = def.type;
     game.enemies = [];
+    game.obstacles = [];
     game.defeated = 0;
-    const isBoss = game.stage === TOTAL_CARS;
+
+    if (def.type === "horse") {
+      game.horse = { dist: 0, goal: 620, spawnCd: 50, obsCd: 90 };
+      hero.x = 150; hero.y = GROUND; hero.vy = 0; hero.onGround = true; hero.attack = null;
+      return;
+    }
+
+    // tågstrid
+    game.horse = null;
+    const isBoss = !!def.boss;
     game.toDefeat = isBoss ? 1 : 2 + game.stage;
     let spawned = 0;
     const initial = Math.min(isBoss ? 1 : 3, game.toDefeat);
     for (let i = 0; i < initial; i++) { makeEnemy(isBoss && i === 0); spawned++; }
     game._queued = game.toDefeat - spawned;
     game._boss = isBoss;
+  }
+
+  // ---- fiende till häst (jaktläge) ----
+  function makeRider() {
+    game.enemies.push({
+      horse: true,
+      x: W + 40 + Math.random() * 60, y: GROUND, vx: 0, vy: 0,
+      w: 22, h: 38, dir: -1, hp: 1, maxHp: 1,
+      onGround: true, walkPhase: Math.random() * 6,
+      speed: 1.4 + Math.random() * 0.8, swipeCd: 40 + Math.random() * 40,
+      hurtT: 0
+    });
+  }
+  function makeObstacle() {
+    const kind = Math.random() < 0.5 ? "cactus" : "barrel";
+    game.obstacles.push({ x: W + 30, y: GROUND, kind, hit: false });
   }
 
   function makeEnemy(boss = false) {
@@ -224,6 +272,11 @@
   }
 
   function updatePlay() {
+    if (game.mode === "horse") { updateHorsePlay(); return; }
+    updateTrainPlay();
+  }
+
+  function updateTrainPlay() {
     const h = hero;
 
     // ---- rörelse ----
@@ -280,6 +333,95 @@
     if (game.defeated >= game.toDefeat && game.enemies.length === 0) {
       if (game.stage >= TOTAL_CARS) winGame();
       else stageClear();
+    }
+  }
+
+  // ---------- HÄSTJAKT ----------
+  function updateHorsePlay() {
+    const h = hero, hz = game.horse;
+    const worldSpeed = 3.2;
+
+    // rörelse i sidled (positionera dig för att piska)
+    const speed = 2.6;
+    if (!h.attack) {
+      if (keys.left) h.vx = -speed;
+      else if (keys.right) h.vx = speed;
+      else h.vx = 0;
+    } else h.vx = 0;
+    h.dir = 1; // rider alltid framåt
+
+    if (consume("jump") && h.onGround) { h.vy = -10.5; h.onGround = false; sfx.jump(); }
+
+    // piska
+    if (h.attack) { h.atkT--; if (h.atkT <= 0) h.attack = null; }
+    else if (consume("punch") || consume("kick")) { h.attack = "kick"; h.atkT = 14; sfx.kick(); doWhip(); }
+
+    h.x += h.vx;
+    h.vy += GRAV; h.y += h.vy;
+    if (h.y >= GROUND) { h.y = GROUND; h.vy = 0; h.onGround = true; }
+    h.x = clamp(h.x, 110, 330);
+    if (h.invuln > 0) h.invuln--;
+    if (h.hurtT > 0) h.hurtT--;
+    h.walkPhase += 0.45;
+
+    // världen rullar, vi närmar oss tåget
+    game.scroll += worldSpeed;
+    game.wheelPhase += 0.3;
+    hz.dist++;
+
+    // spawn av banditryttare och hinder
+    hz.spawnCd--; if (hz.spawnCd <= 0) { makeRider(); hz.spawnCd = 55 + Math.random() * 55; }
+    hz.obsCd--; if (hz.obsCd <= 0) { makeObstacle(); hz.obsCd = 120 + Math.random() * 90; }
+
+    // ryttare
+    for (const e of game.enemies) updateRider(e);
+    for (let i = game.enemies.length - 1; i >= 0; i--) {
+      const e = game.enemies[i];
+      if (e.hp <= 0 && e.deadT === undefined) { e.deadT = 22; e.vy = -5; e.vx = -3; }
+      if (e.deadT !== undefined) {
+        e.deadT--; e.vy += GRAV; e.y += e.vy; e.x += e.vx; if (e.deadT <= 0) game.enemies.splice(i, 1);
+      } else if (e.x < -60) { game.enemies.splice(i, 1); }
+    }
+
+    // hinder
+    for (let i = game.obstacles.length - 1; i >= 0; i--) {
+      const o = game.obstacles[i];
+      o.x -= worldSpeed;
+      if (!o.hit && Math.abs(o.x - h.x) < 18) {
+        if (h.y < GROUND - 16) { o.hit = true; addScore(100, o.x, GROUND - 50); } // hoppade fint över
+        else { o.hit = true; hurtHero(8, -1); }
+      }
+      if (o.x < -40) game.obstacles.splice(i, 1);
+    }
+
+    if (hz.dist >= hz.goal) {
+      if (game.stage >= TOTAL_CARS) winGame(); else stageClear();
+    }
+  }
+
+  function doWhip() {
+    const h = hero;
+    let hit = false;
+    for (const e of game.enemies) {
+      if (e.deadT !== undefined) continue;
+      if (e.x > h.x - 12 && e.x < h.x + 62 && Math.abs(e.y - h.y) < 30) {
+        e.hp = 0; hit = true;
+        addScore(300, e.x, e.y - 44); sfx.coin();
+        burst(e.x, e.y - 20, C.gold, 10);
+      }
+    }
+    if (hit) game.shake = 5; else sfx.hit();
+  }
+
+  function updateRider(e) {
+    if (e.deadT !== undefined) return;
+    const h = hero;
+    e.x -= (2.0 + e.speed); // galopperar mot dig
+    e.walkPhase += 0.45;
+    // sveper mot dig om den når fram outpiskad
+    if (Math.abs(e.x - h.x) < 22 && Math.abs(e.y - h.y) < 26 && h.invuln <= 0 && h.y > GROUND - 16) {
+      hurtHero(10, -1);
+      e.x = h.x - 50; // far förbi
     }
   }
 
@@ -379,8 +521,9 @@
     hero.hp = Math.min(hero.maxHp, hero.hp + 30);
     resetHero(); spawnStage(); syncHud();
   }
-  function gameOver() { game.state = "OVER"; game.timer = 0; sfx.over(); hud.classList.add("hidden"); touch.classList.add("hidden"); }
-  function winGame() { game.state = "WIN"; game.timer = 0; sfx.clear(); hud.classList.add("hidden"); touch.classList.add("hidden"); }
+  function gameOver() { game.state = "OVER"; game.timer = 0; sfx.over(); commitBest(); hud.classList.add("hidden"); touch.classList.add("hidden"); }
+  function winGame() { game.state = "WIN"; game.timer = 0; sfx.clear(); commitBest(); hud.classList.add("hidden"); touch.classList.add("hidden"); }
+  function commitBest() { if (game.score > bestScore) { bestScore = game.score; saveBest(bestScore); } }
 
   function anyKey() {
     audio();
@@ -392,6 +535,7 @@
   function syncHud() {
     elScore.textContent = String(game.score).padStart(6, "0");
     elStage.textContent = game.stage;
+    elStageLabel.textContent = game.mode === "horse" ? "JAKT" : "VAGN";
     elLives.textContent = game.lives > 0 ? "♥".repeat(game.lives) : "—";
     elHealth.style.width = clamp(hero.hp / hero.maxHp * 100, 0, 100) + "%";
   }
@@ -405,15 +549,25 @@
     ctx.save();
     if (game.shake > 0) ctx.translate(rnd(-game.shake, game.shake), rnd(-game.shake, game.shake));
 
-    drawSky();
-    drawDunes();
-    drawTrain();
-
-    if (game.state === "PLAY" || game.state === "CLEAR") {
-      // fiender bakifrån
+    if (game.mode === "horse" && (game.state === "PLAY" || game.state === "CLEAR")) {
+      drawSky();
+      drawDunes();
+      drawDistantTrain();
+      drawDesert();
+      for (const o of game.obstacles) drawObstacle(o);
       const ents = [...game.enemies].sort((a, b) => a.y - b.y);
-      for (const e of ents) drawEnemy(e);
-      drawHero();
+      for (const e of ents) drawRider(e);
+      drawHeroMounted();
+      drawChaseMeter();
+    } else {
+      drawSky();
+      drawDunes();
+      drawTrain();
+      if (game.state === "PLAY" || game.state === "CLEAR") {
+        const ents = [...game.enemies].sort((a, b) => a.y - b.y);
+        for (const e of ents) drawEnemy(e);
+        drawHero();
+      }
     }
 
     drawParticles();
@@ -423,10 +577,98 @@
     if (game.flash > 0) { ctx.fillStyle = `rgba(255,255,255,${game.flash / 12})`; ctx.fillRect(0, 0, W, H); }
 
     if (game.state === "TITLE") drawTitle();
-    else if (game.state === "CLEAR") drawBanner(`VAGN ${game.stage} RENSAD!`, "Gör dig redo...");
+    else if (game.state === "CLEAR") drawBanner(game.mode === "horse" ? "JAKTEN LYCKADES!" : `VAGN ${game.stage} RENSAD!`, "Gör dig redo...");
     else if (game.state === "OVER") drawEnd("SPELET SLUT", "Tryck för att försöka igen");
     else if (game.state === "WIN") drawEnd("TÅGET ÄR DITT!", "Du klarade alla vagnar – tryck för nytt rån");
   }
+
+  // ---- jaktscen ----
+  function drawDesert() {
+    const g = ctx.createLinearGradient(0, GROUND - 4, 0, H);
+    g.addColorStop(0, C.sandLit); g.addColorStop(1, C.sand);
+    ctx.fillStyle = g; ctx.fillRect(0, GROUND, W, H - GROUND);
+    // strecksand som rusar förbi
+    ctx.fillStyle = C.rust;
+    const off = ((game.scroll) % 40 + 40) % 40;
+    for (let x = -off; x < W; x += 40) { px(x, GROUND + 18, 14, 2, C.rust); px(x + 20, GROUND + 34, 10, 2, C.rust); }
+  }
+  function drawDistantTrain() {
+    // tåget vi jagar – litet, vid horisonten, rör sig
+    const baseY = 214;
+    const off = (game.scroll * 0.25) % 60;
+    ctx.globalAlpha = 0.8;
+    for (let i = 0; i < 5; i++) {
+      const x = 360 + i * 46 - off;
+      px(x, baseY, 40, 16, C.trainBody);
+      px(x, baseY - 4, 40, 4, C.trainTrim);
+    }
+    // lok-rök
+    px(345, baseY - 6, 14, 10, C.trainBody);
+    for (let i = 0; i < 3; i++) { ctx.globalAlpha = 0.3 - i * 0.08; px(340 - i * 10, baseY - 16 - i * 8, 10 + i * 4, 8, C.white); }
+    ctx.globalAlpha = 1;
+  }
+  function drawChaseMeter() {
+    const hz = game.horse; if (!hz) return;
+    const w = 160, x = (W - w) / 2, y = 16;
+    px(x - 2, y - 2, w + 4, 10, C.black);
+    px(x, y, w, 6, "#2a1525");
+    px(x, y, w * clamp(hz.dist / hz.goal, 0, 1), 6, C.gold);
+    ctx.textAlign = "center"; ctx.font = "9px 'Special Elite', monospace";
+    ctx.fillStyle = C.white; ctx.fillText("IFATT TÅGET", W / 2, y + 20); ctx.textAlign = "start";
+  }
+  function drawObstacle(o) {
+    if (o.kind === "cactus") { drawCactus(o.x, GROUND + 2, 0.85); }
+    else {
+      px(o.x - 9, GROUND - 20, 18, 22, C.barrel);
+      px(o.x - 9, GROUND - 16, 18, 3, C.barrelHoop);
+      px(o.x - 9, GROUND - 4, 18, 3, C.barrelHoop);
+      px(o.x - 9, GROUND - 20, 18, 2, C.sandLit);
+    }
+  }
+  function drawHeroMounted() {
+    const h = hero;
+    if (h.invuln > 0 && Math.floor(h.invuln / 4) % 2 === 0) return;
+    drawHorse(h.x, h.y, 1, h.walkPhase, C.horse, C.horseDk);
+    drawCowboy(h.x - 2, h.y - 22, 1, {
+      shirt: C.heroShirt, shirtDk: C.heroShirtDk, hat: C.heroHat, pants: C.heroPants,
+      attack: h.attack, walk: 0, jump: false, hurt: h.hurtT > 0, mounted: true
+    });
+  }
+  function drawRider(e) {
+    const dying = e.deadT !== undefined;
+    if (!dying) drawHorse(e.x, e.y, -1, e.walkPhase, "#5a4a3a", "#3a2e22");
+    drawCowboy(e.x - 2, e.y - (dying ? 0 : 22), -1, {
+      shirt: C.banShirt, shirtDk: C.banShirtDk, hat: C.banHat, pants: "#2a2230",
+      band: C.banBand, bandit: true, attack: null, walk: 0, jump: false, dying, mounted: !dying
+    });
+  }
+
+  // galopperande häst i pixelstil
+  function drawHorse(cx, cy, dir, phase, body, dark) {
+    ctx.save();
+    ctx.translate(cx, cy); ctx.scale(dir, 1);
+    const P = (x, y, w, h, c) => px(x, y, w, h, c);
+    ctx.globalAlpha = 0.3; P(-18, -2, 38, 4, C.black); ctx.globalAlpha = 1;
+    // ben (galopp – fram/bak i motfas)
+    const s = Math.sin(phase) * 6, s2 = Math.sin(phase + Math.PI) * 6;
+    P(-14, -14, 5, 14 + s, dark); P(-14, 0 + s, 5, 3, C.hoof);
+    P(-6, -14, 5, 14 + s2, dark); P(-6, 0 + s2, 5, 3, C.hoof);
+    P(6, -14, 5, 14 + s2, dark); P(6, 0 + s2, 5, 3, C.hoof);
+    P(13, -14, 5, 14 + s, dark); P(13, 0 + s, 5, 3, C.hoof);
+    // kropp
+    P(-16, -28, 34, 16, body);
+    P(-16, -28, 34, 4, dark);
+    // svans
+    P(-20, -26, 5, 16, C.horseMane);
+    // hals + huvud framåt
+    P(14, -38, 8, 14, body);
+    P(20, -42, 10, 9, body);
+    P(28, -40, 4, 3, C.hoof);            // mule
+    P(18, -44, 4, 5, C.horseMane);       // man
+    P(26, -41, 2, 2, C.black);           // öga
+    ctx.restore();
+  }
+
 
   // ---- bakgrund ----
   function drawSky() {
@@ -630,7 +872,12 @@
     // undertitel
     ctx.font = "13px 'Special Elite', monospace";
     ctx.fillStyle = C.white;
-    ctx.fillText("Rensa tåget från banditer – vagn för vagn", W / 2, 200);
+    ctx.fillText("Rensa tågvagnar – och rid ifatt tåget i full galopp", W / 2, 200);
+
+    if (bestScore > 0) {
+      ctx.font = "12px 'Special Elite', monospace"; ctx.fillStyle = C.gold;
+      ctx.fillText("REKORD: " + String(bestScore).padStart(6, "0"), W / 2, 220);
+    }
 
     if (Math.floor(game.timer / 30) % 2 === 0) {
       ctx.font = "16px 'Rye', serif"; ctx.fillStyle = C.sun;
@@ -661,10 +908,12 @@
     ctx.fillStyle = C.black; ctx.fillText(title, W / 2 + 3, 150 + 3);
     ctx.fillStyle = title === "SPELET SLUT" ? C.blood : C.gold; ctx.fillText(title, W / 2, 150);
     ctx.font = "16px 'Special Elite', monospace"; ctx.fillStyle = C.white;
-    ctx.fillText("Poäng: " + String(game.score).padStart(6, "0"), W / 2, 190);
+    ctx.fillText("Poäng: " + String(game.score).padStart(6, "0"), W / 2, 186);
+    ctx.fillStyle = (game.score >= bestScore && game.score > 0) ? C.gold : "rgba(241,228,201,0.8)";
+    ctx.fillText((game.score >= bestScore && game.score > 0 ? "NYTT REKORD! " : "Rekord: ") + String(bestScore).padStart(6, "0"), W / 2, 208);
     if (Math.floor(game.timer / 30) % 2 === 0) {
       ctx.font = "14px 'Rye', serif"; ctx.fillStyle = C.sun;
-      ctx.fillText(sub, W / 2, 232);
+      ctx.fillText(sub, W / 2, 240);
     }
     ctx.textAlign = "start";
   }

@@ -30,6 +30,12 @@ krävs.
 Slaget är snabbt och kort. Sparken har längre räckvidd och knuffar tillbaka.
 Töm en vagn på banditer för att rulla vidare. Den sista vagnen vaktas av en boss.
 
+Mellan vissa vagnar växlar spelet till en **hästjakt**: du galopperar ifatt tåget,
+piskar banditryttare som rider mot dig (`SLAG`/`SPARK`) och hoppar (`HOPP`) över
+kaktusar och tunnor. Fyll mätaren "ifatt tåget" så är jakten klar.
+
+Ditt **rekord sparas lokalt** i webbläsaren och visas på titel- och slutskärmen.
+
 ---
 
 ## 🚀 Lägg upp på GitHub Pages
@@ -107,10 +113,10 @@ Tips för en bra app-känsla:
 
 ## 🛠 Idéer för vidareutveckling
 
-- Häst-jaktbana som bonusnivå mellan vagnarna
-- Kast-/skjutvapen och pick-ups
-- Highscore sparad lokalt (`localStorage`) eller online
+- Online-highscore (topplista delad mellan spelare)
+- Kast-/skjutvapen och pick-ups i tågvagnarna
 - Egna pixel-sprites istället för procedurgrafik
+- Fler bantyper och en sista bossstrid ovanpå loket
 - Musik via WebAudio-sekvensering
 
 ---
