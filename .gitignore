@@ -1,0 +1,11 @@
+# Node / Capacitor
+node_modules/
+.DS_Store
+*.log
+
+# Android-bygge
+android/
+*.apk
+*.aab
+.gradle/
+build/
